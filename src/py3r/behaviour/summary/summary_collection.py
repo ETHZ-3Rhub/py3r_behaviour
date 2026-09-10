@@ -751,8 +751,7 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
 
         surrogates = np.asarray(surrogates, dtype=float)
         n = len(surrogates)
-        r = int(np.sum(surrogates >= observed))
-        p_empirical = (r + 1) / (n + 1)
+        p_empirical = 1.0 / (n + 1)
 
         for q in quantiles:
             threshold = float(np.quantile(surrogates, q))
@@ -815,7 +814,6 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
     def gpd_augmented_p(
         bfa_results: dict[str, dict[str, float]],
         *,
-        min_tail_count: int = 10,
         quantiles: Sequence[float] = _DEFAULT_GPD_QUANTILES,
         min_exceedances: int = 25,
         gof_alpha: float = 0.05,
@@ -823,47 +821,36 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
         upper_bound: float | dict[str, float] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """
-        Right-tail p-value, GPD-augmented once the empirical estimate gets thin.
+        Right-tail p-value, GPD-augmented once the empirical estimate saturates.
 
         For each pair, the empirical p-value is ``(r + 1) / (N + 1)`` where
         ``r`` is the number of surrogates at least as extreme as the observed
         distance (matching the resolution of ``bfa_stats``'s ``percentile``).
-        This is always what's returned in the ``"p"`` field's ``method`` is
-        ``"empirical"``. When ``r >= min_tail_count`` (plenty of surrogates
-        beat the observation), that empirical value is returned as-is — a
-        parametric tail model adds nothing when the rank estimate already has
-        a comfortable sample behind it.
+        When this estimate is *not* at its floor (``1 / (N + 1)``, i.e. at
+        least one surrogate matched or exceeded the observation), that
+        empirical value is returned as-is — it is already well resolved and a
+        parametric tail model adds nothing.
 
-        Once ``r`` drops below ``min_tail_count`` this function attempts a
-        Generalized Pareto (Peaks-Over-Threshold) tail fit on the surrogate
-        distribution instead, to get a smoother, less rank-noisy estimate
-        than a handful of surviving surrogates can give — including, at the
-        extreme end (``r == 0``), a p-value below what ``1 / (N + 1))``
-        surrogates can resolve at all. The trigger is deliberately not just
-        ``r == 0``: a rank of 1-9 out of hundreds/thousands of surrogates is
-        itself high-variance, and a hard cutoff exactly at the resolution
-        floor would make the estimate discontinuous right where it matters
-        most. The GPD fit is rejected — falling back to the empirical value —
-        if no threshold in ``quantiles`` yields a fit that (a) passes a
-        Kolmogorov-Smirnov goodness-of-fit test, (b) has a finite right
-        endpoint (when ``xi < 0``) consistent with the observed value having
-        actually occurred, and, if ``upper_bound`` is given, consistent with
-        the known physical upper bound on the distance, and (c) does not
-        require extrapolating more than ``max_extrapolation_factor`` times
-        the largest fitted exceedance.
+        Only when the empirical estimate saturates at the floor does this
+        function attempt a Generalized Pareto (Peaks-Over-Threshold) tail fit
+        on the surrogate distribution, to estimate a p-value below what
+        ``1 / (N + 1)`` surrogates can resolve. The GPD fit is rejected —
+        falling back to the empirical floor — if no threshold in ``quantiles``
+        yields a fit that (a) passes a Kolmogorov-Smirnov goodness-of-fit
+        test, (b) has a finite right endpoint (when ``xi < 0``) consistent
+        with the observed value having actually occurred, and, if
+        ``upper_bound`` is given, consistent with the known physical upper
+        bound on the distance, and (c) does not require extrapolating more
+        than ``max_extrapolation_factor`` times the largest fitted exceedance.
 
         This function does not replace ``bfa_stats`` or its ``right_tail_p``;
-        it is an additive, opt-in refinement for the thin-tail case, and
+        it is an additive, opt-in refinement for the saturated-tail case, and
         accepts the same ``bfa_results`` shape returned by ``bfa`` (or
         ``combine_bfa_results`` / ``bfa_multiscale``, since their output has
         the identical ``{"observed", "surrogates"}`` structure).
 
         Args:
             bfa_results: BFA result dict as returned by ``bfa``.
-            min_tail_count: Trigger the GPD fit once fewer than this many
-                surrogates are at least as extreme as the observation. The
-                empirical estimate is always still reported regardless of
-                which branch fires.
             quantiles: Candidate threshold quantiles to scan, lowest first
                 (i.e. most data-rich first). The first passing threshold wins.
             min_exceedances: Minimum number of surrogates above a candidate
@@ -881,9 +868,9 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
 
         Returns:
             ``{pair: {"p", "method", "fallback", ...fit diagnostics}}``.
-            ``method`` is ``"empirical"`` when ``r >= min_tail_count``, or
-            when below it but no GPD fit was accepted (``fallback`` is True
-            in that second case); ``"gpd"`` otherwise.
+            ``method`` is ``"empirical"`` when the empirical estimate was not
+            saturated, or when saturated but no GPD fit was accepted
+            (``fallback`` is True in that second case); ``"gpd"`` otherwise.
 
         Examples
         --------
@@ -898,7 +885,7 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
         'gpd'
         >>> out['A_vs_B']['p'] < 1 / (len(surrogates) + 1)
         True
-        >>> # comfortable tail count: empirical estimate passed through unchanged
+        >>> # unsaturated case: empirical estimate passed through unchanged
         >>> bfa_out2 = {'A_vs_B': {'observed': 0.0, 'surrogates': surrogates}}
         >>> SummaryCollection.gpd_augmented_p(bfa_out2)['A_vs_B']['method']
         'empirical'
@@ -914,8 +901,9 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
             n = len(surrogates)
             r = int(np.sum(surrogates >= observed))
             p_empirical = (r + 1) / (n + 1)
+            floor = 1.0 / (n + 1)
 
-            if r >= min_tail_count:
+            if p_empirical > floor:
                 stats[pair] = {"p": p_empirical, "method": "empirical", "fallback": False}
                 continue
 
@@ -938,7 +926,6 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
         n_bootstrap: int = 200,
         ci: float = 0.95,
         random_state: int | None = None,
-        min_tail_count: int = 10,
         quantiles: Sequence[float] = _DEFAULT_GPD_QUANTILES,
         min_exceedances: int = 25,
         gof_alpha: float = 0.05,
@@ -952,8 +939,7 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
         only computed for pairs whose point estimate used the GPD fit
         (``method == "gpd"``) — this mirrors the plan's "bootstrap CI on the
         tail p-value": the empirical p-value is already exactly resolved by
-        its rank, so there is nothing to bound for pairs with a comfortable
-        tail count.
+        its rank, so there is nothing to bound for unsaturated pairs.
 
         For pairs where the GPD fit fired, resamples the *original surrogate
         sample already returned by* ``bfa()`` *(never regenerated)* with
@@ -971,7 +957,6 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
                 fit, so cost scales linearly with this.
             ci: Confidence level for the reported interval, e.g. ``0.95``.
             random_state: Seed for the bootstrap resampling.
-            min_tail_count: Passed through; see ``gpd_augmented_p``.
             quantiles: Passed through to ``gpd_augmented_p`` / the
                 per-replicate GPD refit; see ``gpd_augmented_p``.
             min_exceedances: Passed through; see ``gpd_augmented_p``.
@@ -1019,7 +1004,6 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
 
         point_estimates = SummaryCollection.gpd_augmented_p(
             bfa_results,
-            min_tail_count=min_tail_count,
             quantiles=quantiles,
             min_exceedances=min_exceedances,
             gof_alpha=gof_alpha,
@@ -1042,6 +1026,7 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
             observed = bfa_results[pair]["observed"]
             surrogates = np.asarray(bfa_results[pair]["surrogates"], dtype=float)
             n = len(surrogates)
+            floor = 1.0 / (n + 1)
             pair_bound = upper_bound.get(pair) if isinstance(upper_bound, dict) else upper_bound
 
             boot_p = np.empty(n_bootstrap)
@@ -1050,7 +1035,7 @@ class SummaryCollection(BaseCollection, SummaryCollectionPlotMixin):
                 resample = rng.choice(surrogates, size=n, replace=True)
                 r = int(np.sum(resample >= observed))
                 p_emp = (r + 1) / (n + 1)
-                if r >= min_tail_count:
+                if p_emp > floor:
                     boot_p[i] = p_emp
                     continue
                 fit = SummaryCollection._fit_gpd_tail(
