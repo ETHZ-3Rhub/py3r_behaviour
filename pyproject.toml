@@ -43,6 +43,8 @@ dev = [
     "mkdocs-material>=9,<10.0.0",
     "mkdocs-autorefs>=1,<2.0.0",
     "mkdocstrings[python]>=0.25,<1.0.0",
+    # 12.x adds a required `md` arg to Highlight.__init__, which mkdocstrings <1.0 doesn't pass
+    "pymdown-extensions<12",
     "mkdocs-glightbox>=0.4,<1.0.0",
     "mike>=2,<3.0.0",
     # notebooks workflow and diffs
