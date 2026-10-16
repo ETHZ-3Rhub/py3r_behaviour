@@ -2383,8 +2383,6 @@ class Features:
             self.data[col].dtype for col in embedding if _is_numpy_float(self.data[col].dtype)
         ]
         block_dtype = np.result_type(*float_dtypes) if float_dtypes else np.dtype(np.float64)
-        pad = max((abs(s) for shifts in embedding.values() for s in shifts), default=0)
-
         # (columns, frames) layout matches pandas' internal block layout, so each
         # shifted column is one contiguous slice copy and the transpose below is
         # wrapped without copying
@@ -2398,11 +2396,18 @@ class Features:
                 continue
             series = self.data[col]
             if series.dtype == block_dtype:
-                padded = np.full(n + 2 * pad, np.nan, dtype=block_dtype)
-                padded[pad : pad + n] = series.to_numpy()
+                values = series.to_numpy()
                 for loc, s in zip(locs, shifts, strict=True):
-                    # value at frame t + s (positive shift looks forward)
-                    out[loc] = padded[pad + s : pad + s + n]
+                    # out[loc, t] = values[t + s] (positive shift looks forward); frames
+                    # where t + s falls outside the data are NaN. No padding, so memory
+                    # stays O(n) however large the shift.
+                    k = min(abs(s), n)
+                    if s >= 0:
+                        out[loc, : n - k] = values[k:]
+                        out[loc, n - k :] = np.nan
+                    else:
+                        out[loc, k:] = values[: n - k]
+                        out[loc, :k] = np.nan
             else:
                 shifted = pd.concat(
                     [series.shift(-s) for s in shifts], axis=1, keys=range(len(shifts))

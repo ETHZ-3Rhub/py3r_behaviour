@@ -69,6 +69,8 @@ EMBEDDINGS = {
     "non-contiguous and unsorted shifts": {"f64": [7, -3, 0, 2]},
     "duplicate shifts": {"f64": [1, 0, 1, -1, 0], "bool_na": [1, 1]},
     "shift beyond length": {"f64": [-10_000, 0, 10_000], "bool_na": [10_000]},
+    "shift equal to length": {"f64": [-40, 40, -39, 39], "f32": [40]},
+    "arbitrary shifts": {"f64": [10, 3, 7982, 4, 0, -9], "bool_na": [10, 3, 7982, 4, 0, -9]},
     "empty shift list": {"f64": [], "f64b": [0, 1], "bool_na": []},
     "empty embedding": {},
 }
@@ -100,3 +102,11 @@ def test_zero_rows(features):
 def test_missing_column_raises(features):
     with pytest.raises(ValueError, match="not present"):
         features.embedding_df({"nope": [0]})
+
+
+def test_huge_shift_does_not_allocate_padding(features):
+    # a pad-based implementation would try to allocate ~16 GB per column here
+    result = features.embedding_df({"f64": [10**9, 0, -(10**9)]})
+    assert result["f64_t+1000000000"].isna().all()
+    assert result["f64_t-1000000000"].isna().all()
+    pd.testing.assert_series_equal(result["f64_t0"], features.data["f64"], check_names=False)
