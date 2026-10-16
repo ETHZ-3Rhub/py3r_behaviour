@@ -55,6 +55,11 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
+def _is_numpy_float(dtype) -> bool:
+    """True for plain numpy float dtypes (not nullable ``Float64``, which uses pd.NA)."""
+    return isinstance(dtype, np.dtype) and dtype.kind == "f"
+
+
 def _axis_boundary_intersections(
     A: np.ndarray,
     B: np.ndarray,
@@ -2356,16 +2361,57 @@ class Features:
         missing = [col for col in embedding if col not in self.data.columns]
         if len(missing) > 0:
             raise ValueError(f"The following columns are not present in self.data: {missing}")
-        data = {}
+        # dict.fromkeys drops duplicate shifts (keeping first position), as the
+        # old dict-of-columns construction did
+        embedding = {
+            col: list(dict.fromkeys(int(s) for s in shifts)) for col, shifts in embedding.items()
+        }
+        columns = [
+            f"{col}_t{s:+d}" if s != 0 else f"{col}_t0"
+            for col, shifts in embedding.items()
+            for s in shifts
+        ]
+        if not columns:
+            return pd.DataFrame(index=self.data.index)
+        n = len(self.data)
+
+        # Plain numpy float columns are shifted in numpy into one preallocated
+        # block (much faster than per-column Series.shift for wide embeddings).
+        # All other dtypes (nullable boolean/Int64/Float64, int, bool, ...) keep
+        # Series.shift so their dtype and pd.NA handling are unchanged.
+        float_dtypes = [
+            self.data[col].dtype for col in embedding if _is_numpy_float(self.data[col].dtype)
+        ]
+        block_dtype = np.result_type(*float_dtypes) if float_dtypes else np.dtype(np.float64)
+        pad = max((abs(s) for shifts in embedding.values() for s in shifts), default=0)
+
+        # (columns, frames) layout matches pandas' internal block layout, so each
+        # shifted column is one contiguous slice copy and the transpose below is
+        # wrapped without copying
+        out = np.empty((len(columns), n), dtype=block_dtype)
+        fallback: list[tuple[list[int], pd.DataFrame]] = []
+        j = 0
         for col, shifts in embedding.items():
-            base_series = self.data[col]
-            for shift in shifts:
-                shifted = base_series.shift(
-                    -shift
-                )  # Reverse the sign: positive shift looks forward
-                suffix = f"t{shift:+d}" if shift != 0 else "t0"
-                data[f"{col}_{suffix}"] = shifted
-        embed_df = pd.DataFrame(data, index=self.data.index)
+            locs = list(range(j, j + len(shifts)))
+            j += len(shifts)
+            if not shifts:
+                continue
+            series = self.data[col]
+            if series.dtype == block_dtype:
+                padded = np.full(n + 2 * pad, np.nan, dtype=block_dtype)
+                padded[pad : pad + n] = series.to_numpy()
+                for loc, s in zip(locs, shifts, strict=True):
+                    # value at frame t + s (positive shift looks forward)
+                    out[loc] = padded[pad + s : pad + s + n]
+            else:
+                shifted = pd.concat(
+                    [series.shift(-s) for s in shifts], axis=1, keys=range(len(shifts))
+                )
+                fallback.append((locs, shifted))
+
+        embed_df = pd.DataFrame(out.T, index=self.data.index, columns=columns, copy=False)
+        for locs, shifted in fallback:
+            embed_df.isetitem(locs, shifted)
         return embed_df
 
     def cluster_embedding(self, *args, **kwargs):
