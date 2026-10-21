@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py3r-behaviour"
-version = "3.4.2"
+version = "3.4.3"
 description = "Behaviour analysis tools for the py3r namespace package"
 authors = [{ name = "Tom Lorimer" }]
 dependencies = [
@@ -28,10 +28,6 @@ dependencies = [
 viz = [
     "pycirclize>=1,<2.0.0",
     "umap-learn>=0.5,<1.0.0",
-]
-# ONNX inference (for OnnxClassifier)
-onnx = [
-    "onnxruntime>=1.18,<2.0.0",
 ]
 # Developer tooling: testing, notebooks-as-tests, and documentation build
 dev = [
