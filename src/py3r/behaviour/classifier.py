@@ -23,6 +23,9 @@ class BaseClassifier:
 class OnnxClassifier(BaseClassifier):
     """Run a pre-trained ONNX model on a Features embedding.
 
+    Experimental: not yet validated end to end and not part of the public
+    API; its interface may change or be removed without notice.
+
     Args:
         model_path: Path to the ``.onnx`` model file.
         embedding_dict: Mapping of feature column name to time shifts, passed
